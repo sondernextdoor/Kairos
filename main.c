@@ -86,6 +86,15 @@ VOID PgMonitorThread(PVOID StartContext) {
         }
 
         KeDelayExecutionThread(KernelMode, FALSE, &interval);
+
+        if ((now - g_PgContextArray[i].LastCheckTime) > threshold) {
+        DebugLog("PG is about to run. Reverting patch!\n");
+        RevertKernelPatch();
+}
+
+// Wait, then reapply
+KeDelayExecutionThread(KernelMode, FALSE, &interval);
+ReapplyKernelPatch();
     }
 
     PsTerminateSystemThread(STATUS_SUCCESS);
@@ -138,4 +147,22 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
     g_PgMonitorThreadHandle = threadHandle;
     DebugLog("Driver loaded and monitoring PatchGuard contexts.\n");
     return STATUS_SUCCESS;
+}
+
+UCHAR OriginalBytes[16] = {0};
+UCHAR PatchedBytes[16]  = { /* your hook or patch */ };
+PVOID PatchAddress      = NULL;  // Set this!
+
+VOID RevertKernelPatch() {
+    if (PatchAddress && MmIsAddressValid(PatchAddress)) {
+        RtlCopyMemory(PatchAddress, OriginalBytes, sizeof(OriginalBytes));
+        DebugLog("Patch reverted.\n");
+    }
+}
+
+VOID ReapplyKernelPatch() {
+    if (PatchAddress && MmIsAddressValid(PatchAddress)) {
+        RtlCopyMemory(PatchAddress, PatchedBytes, sizeof(PatchedBytes));
+        DebugLog("Patch reapplied.\n");
+    }
 }
