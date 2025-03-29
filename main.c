@@ -15,11 +15,53 @@ typedef struct _PG_CONTEXT_ENTRY {
     ULONGLONG LastCheckTime;
 } PG_CONTEXT_ENTRY, *PPG_CONTEXT_ENTRY;
 
+typedef struct _KAIROS_PATCH_ENTRY {
+    PVOID TargetAddress;
+    UCHAR Original[16];
+    UCHAR Patch[16];
+    BOOLEAN Active;
+} KAIROS_PATCH_ENTRY, *PKAIROS_PATCH_ENTRY;
+
+#define MAX_PATCHES 8
+KAIROS_PATCH_ENTRY g_PatchList[MAX_PATCHES] = { 0 };
 PG_CONTEXT_ENTRY g_PgContextArray[MAX_PG_CONTEXTS];
 ULONG g_NumPgContexts = 0;
 PVOID g_SharedMemoryBase = NULL;
 HANDLE g_PgMonitorThreadHandle = NULL;
 BOOLEAN g_StopPgMonitorThread = FALSE;
+UCHAR OriginalBytes[16] = {0};
+UCHAR PatchedBytes[16]  = { /* your hook or patch */ };
+PVOID PatchAddress      = NULL;  // Set this!
+
+VOID RegisterPatch(PVOID addr, PUCHAR patch, SIZE_T len) {
+    for (int i = 0; i < MAX_PATCHES; i++) {
+        if (!g_PatchList[i].Active) {
+            g_PatchList[i].TargetAddress = addr;
+            RtlCopyMemory(g_PatchList[i].Patch, patch, len);
+            RtlCopyMemory(g_PatchList[i].Original, addr, len);
+            g_PatchList[i].Active = TRUE;
+            break;
+        }
+    }
+}
+
+VOID RevertKernelPatch() {
+    for (int i = 0; i < MAX_PATCHES; i++) {
+        if (g_PatchList[i].Active) {
+            RtlCopyMemory(g_PatchList[i].TargetAddress,
+                          g_PatchList[i].Original, sizeof(g_PatchList[i].Original));
+        }
+    }
+}
+
+VOID ReapplyKernelPatch() {
+    for (int i = 0; i < MAX_PATCHES; i++) {
+        if (g_PatchList[i].Active) {
+            RtlCopyMemory(g_PatchList[i].TargetAddress,
+                          g_PatchList[i].Patch, sizeof(g_PatchList[i].Patch));
+        }
+    }
+}
 
 // --- Forward Declarations ---
 NTSTATUS FindUniquePatchGuardContexts(void);
@@ -147,22 +189,4 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
     g_PgMonitorThreadHandle = threadHandle;
     DebugLog("Driver loaded and monitoring PatchGuard contexts.\n");
     return STATUS_SUCCESS;
-}
-
-UCHAR OriginalBytes[16] = {0};
-UCHAR PatchedBytes[16]  = { /* your hook or patch */ };
-PVOID PatchAddress      = NULL;  // Set this!
-
-VOID RevertKernelPatch() {
-    if (PatchAddress && MmIsAddressValid(PatchAddress)) {
-        RtlCopyMemory(PatchAddress, OriginalBytes, sizeof(OriginalBytes));
-        DebugLog("Patch reverted.\n");
-    }
-}
-
-VOID ReapplyKernelPatch() {
-    if (PatchAddress && MmIsAddressValid(PatchAddress)) {
-        RtlCopyMemory(PatchAddress, PatchedBytes, sizeof(PatchedBytes));
-        DebugLog("Patch reapplied.\n");
-    }
 }
