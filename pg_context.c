@@ -9,11 +9,32 @@ PVOID ValidatePgContext(PVOID Address) {
     return NULL;
 }
 
-NTSTATUS FindPatchGuardContext(PVOID* Context) {
-    if (!Context) return STATUS_INVALID_PARAMETER;
-    DebugLog("Scanning for PatchGuard context...\n");
-    *Context = ResolveKernelSymbol("NtAllocateVirtualMemory");
-    return (*Context && ValidatePgContext(*Context)) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+NTSTATUS FindPatchGuardContext(PVOID* OutContext) {
+    if (!OutContext) return STATUS_INVALID_PARAMETER;
+
+    PVOID base = GetKernelBase();
+    ULONG size = GetKernelSize();
+
+    if (!base || !size) return STATUS_UNSUCCESSFUL;
+
+    const CHAR signature[] = "Monitor";
+    const SIZE_T sigLen = sizeof(signature) - 1;
+
+    for (ULONG offset = 0; offset < size - sigLen; offset++) {
+        PUCHAR ptr = (PUCHAR)base + offset;
+
+        // Match the "Monitor" string, which has been used by PG contexts
+        if (RtlCompareMemory(ptr, signature, sigLen) == sigLen) {
+            DebugLog("Potential PG context found at: %p\n", ptr);
+
+            if (MmIsAddressValid(ptr)) {
+                *OutContext = (PVOID)ptr;
+                return STATUS_SUCCESS;
+            }
+        }
+    }
+
+    return STATUS_NOT_FOUND;
 }
 
 VOID ExtractPgEncryptionKey(PVOID Context, PUCHAR KeyBuffer) {
