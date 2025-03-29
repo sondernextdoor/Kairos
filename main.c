@@ -187,6 +187,8 @@ VOID PgMonitorThread(PVOID StartContext) {
         ULONGLONG now = GetSystemUptime();
         BOOLEAN allRecent = TRUE;
 
+        TracePatchGuardThreads() 
+        
         for (ULONG i = 0; i < g_NumPgContexts; i++) {
             DecryptContextAndUpdate(g_PgContextArray[i].ContextAddress, &g_PgContextArray[i].LastCheckTime);
             if (g_PgContextArray[i].LastCheckTime == 0 ||
