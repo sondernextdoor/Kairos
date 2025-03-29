@@ -1,35 +1,66 @@
-# Kairos
-# Windows 11 PatchGuard Bypass
+# Kairos  
+**Windows 11 PatchGuard, HVCI, and TPM Research Framework**
 
-This framework is a research-oriented Windows kernel driver that demonstrates how to locate, decrypt, and potentially bypass PatchGuard (KPP) contexts, spoof hypervisor-protected code integrity (HVCI) policies, read secure memory regions guarded by virtualization-based security (VBS), and simulate TPM/Pluton attestation data. It includes code for hardware breakpoint handling (synchronized across all cores) to intercept PatchGuard or security checks and revert changes just-in-time, allowing deeper exploration of Windows 11 kernel defenses in a controlled, educational setting.
+**Kairos** is an advanced research framework designed to explore, monitor, and (selectively) bypass Windows 11 kernel security mechanisms including **PatchGuard (KPP)**, **HVCI (Hypervisor-Protected Code Integrity)**, **VBS-protected memory**, and **TPM/Pluton attestation**.
 
-```
-windows-kernel-framework/
+> **DISCLAIMER:** This project is intended for **academic research, education, and security analysis** only.  
+> It should not be used in production environments or for malicious purposes. Misuse may violate local laws and security policies.
+
+---
+
+## Features
+
+- **PatchGuard Context Detection & Decryption**
+  - Locates PG memory structures via signature scanning
+  - Decrypts contexts using observed AES-XTS keys
+  - Tracks `LastCheckTime` and evades PG runtime validation
+
+- **Dynamic Patch Reversion**
+  - Registers runtime kernel patches
+  - Automatically reverts them just before PG checks
+  - Reapplies patches after PG completes
+
+- **HVCI Policy Spoofing (Stubbed)**
+  - Interfaces for future bypasses of Windows Code Integrity enforcement
+
+- **TPM/Pluton Attestation Spoofing (Stubbed)**
+  - Designed to simulate PCR measurements and spoof secure boot attestation
+
+- **VBS Secure Memory Reading (Planned)**
+  - Framework support for hypercall-based secure memory extraction
+
+- **System Stealth**
+  - Driver cloaking from `PsLoadedModuleList`
+  - PE header wiping and name obfuscation
+  - Hooking of `KeInsertQueueDpc`, `KeBugCheckEx` to block PG and BSOD
+
+---
+
+## Architecture
+
+```text
+DriverEntry() → Detect PatchGuard → Spawn Monitor Thread
+    ↳ Detects PatchGuard Contexts
+    ↳ Registers Kernel Patches (Encrypted)
+    ↳ On PG Activity:
+        ↳ Revert Patches → Let PG Pass → Reapply
+    ↳ Logs & Monitors Secure Structures
+
+Kairos/
 ├── include/
-│   └── windows_kernel_framework.h
+│   └── windows_kernel_framework.h      # Central framework header
 ├── src/
-│   ├── common/
-│   │   ├── utilities.h
-│   │   └── utilities.c
+│   ├── main.c                          # Driver entry, patch logic, monitor thread
 │   ├── patchguard/
-│   │   ├── pg_context.h
-│   │   ├── pg_context.c
-│   │   └── pg_exploit.c
+│   │   ├── pg_context.c/.h             # PG detection & decryption
+│   │   └── pg_exploit.c                # PG activation timestamp discovery
 │   ├── hvci/
-│   │   ├── hvci_policy.h
-│   │   └── hvci_policy.c
+│   │   ├── hvci_policy.c/.h            # HVCI spoofing (stubbed)
 │   ├── vbs/
-│   │   ├── secure_memory.h
-│   │   └── secure_memory.c
+│   │   ├── secure_memory.c/.h          # Secure memory access (stubbed)
 │   ├── tpm_pluton/
-│   │   ├── tpm_integration.h
-│   │   └── tpm_integration.c
-│   └── main.c
-├── tools/
-│   └── win_dbg_scripts/
-│       ├── pg_scan.txt
-│       └── secure_memory_dump.txt
-├── README.md
-├── LICENSE
-└── Makefile / .vcxproj
-
+│   │   ├── tpm_integration.c/.h        # TPM spoofing (stubbed)
+│   └── common/
+│       ├── utilities.c/.h              # Symbol resolution, OS checks, logging
+├── windows-kernel-framework.vcxproj   # Visual Studio KMDF project
+└── README.md                          This file
