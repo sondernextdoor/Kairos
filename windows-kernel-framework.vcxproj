@@ -1,0 +1,53 @@
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{FA7A2A1D-2233-470C-9323-C5F82BE4F445}</ProjectGuid>
+    <Keyword>KernelModeDriver</Keyword>
+    <TargetVersion>10.0</TargetVersion>
+    <ConfigurationType>Driver</ConfigurationType>
+    <RootNamespace>WindowsKernelFramework</RootNamespace>
+    <TargetName>winkernelframework</TargetName>
+    <DriverType>KMDF</DriverType>
+    <TargetPlatformVersion>10.0.22621.0</TargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\\Microsoft.Cpp.Default.props" />
+  <Import Project="$(WDKInstallRoot)\\ProjectTemplates\\WDF\\KMDF\\kmdf.props" />
+  <Import Project="$(VCTargetsPath)\\Microsoft.Cpp.props" />
+
+  <ItemGroup>
+    <ClInclude Include="include\\windows_kernel_framework.h" />
+    <ClInclude Include="src\\common\\utilities.h" />
+    <ClInclude Include="src\\patchguard\\pg_context.h" />
+    <ClInclude Include="src\\hvci\\hvci_policy.h" />
+    <ClInclude Include="src\\vbs\\secure_memory.h" />
+    <ClInclude Include="src\\tpm_pluton\\tpm_integration.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClCompile Include="src\\main.c" />
+    <ClCompile Include="src\\common\\utilities.c" />
+    <ClCompile Include="src\\patchguard\\pg_context.c" />
+    <ClCompile Include="src\\patchguard\\pg_exploit.c" />
+    <ClCompile Include="src\\hvci\\hvci_policy.c" />
+    <ClCompile Include="src\\vbs\\secure_memory.c" />
+    <ClCompile Include="src\\tpm_pluton\\tpm_integration.c" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <IncludePath>$(ProjectDir)\\include;$(ProjectDir)\\src\\common;$(ProjectDir)\\src\\patchguard;$(ProjectDir)\\src\\hvci;$(ProjectDir)\\src\\vbs;$(ProjectDir)\\src\\tpm_pluton;$(WDKIncludePath)</IncludePath>
+    <LibraryPath>$(WDKLibPath)</LibraryPath>
+    <GenerateDebugInformation>true</GenerateDebugInformation>
+    <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+    <EnableFunctionLevelLinking>true</EnableFunctionLevelLinking>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\\Microsoft.Cpp.targets" />
+  <Import Project="$(WDKInstallRoot)\\ProjectTemplates\\WDF\\KMDF\\kmdf.targets" />
+</Project>
