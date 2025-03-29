@@ -15,22 +15,26 @@ NTSTATUS FindPatchGuardContext(PVOID* OutContext) {
     PVOID base = GetKernelBase();
     ULONG size = GetKernelSize();
 
-    if (!base || !size) return STATUS_UNSUCCESSFUL;
+    if (!base || size == 0) return STATUS_UNSUCCESSFUL;
 
-    const CHAR signature[] = "Monitor";
-    const SIZE_T sigLen = sizeof(signature) - 1;
+    for (ULONG offset = 0; offset < size - sizeof(KDPC); offset += sizeof(PVOID)) {
+        PKDPC candidate = (PKDPC)((PUCHAR)base + offset);
 
-    for (ULONG offset = 0; offset < size - sigLen; offset++) {
-        PUCHAR ptr = (PUCHAR)base + offset;
+        if (!MmIsAddressValid(candidate)) continue;
 
-        // Match the "Monitor" string, which has been used by PG contexts
-        if (RtlCompareMemory(ptr, signature, sigLen) == sigLen) {
-            DebugLog("Potential PG context found at: %p\n", ptr);
+        // Look for DPC type 0x13 (Kernel-mode DPC)
+        if (candidate->Type != 0x13) continue;
 
-            if (MmIsAddressValid(ptr)) {
-                *OutContext = (PVOID)ptr;
-                return STATUS_SUCCESS;
-            }
+        // Validate DeferredRoutine
+        PVOID routine = candidate->DeferredRoutine;
+        if (!MmIsAddressValid(routine)) continue;
+
+        // Fingerprint the DeferredRoutine
+        const CHAR* name = GetSymbolNameFromAddress(routine);
+        if (name && strstr(name, "PatchGuard")) {
+            *OutContext = candidate;
+            DebugLog("PatchGuard DPC context found: %p (Routine: %s)", candidate, name);
+            return STATUS_SUCCESS;
         }
     }
 
