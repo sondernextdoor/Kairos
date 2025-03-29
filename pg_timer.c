@@ -42,3 +42,20 @@ VOID ScanForPatchGuardTimers() {
         }
     }
 }
+
+typedef NTSTATUS(*KE_SETTIMER_EX)(
+    PKTIMER, PLARGE_INTEGER, LONG, PKDPC
+);
+
+KE_SETTIMER_EX OriginalKeSetTimerEx = NULL;
+
+NTSTATUS HookedKeSetTimerEx(PKTIMER Timer, PLARGE_INTEGER DueTime, LONG Period, PKDPC Dpc) {
+    if (Dpc && MmIsAddressValid(Dpc->DeferredRoutine)) {
+        const char* name = GetSymbolNameFromAddress(Dpc->DeferredRoutine);
+        if (name && strstr(name, "PatchGuard")) {
+            DebugLog("PG timer set with DPC: %p", Dpc->DeferredRoutine);
+        }
+    }
+
+    return OriginalKeSetTimerEx(Timer, DueTime, Period, Dpc);
+}
