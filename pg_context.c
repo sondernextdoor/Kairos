@@ -38,8 +38,20 @@ NTSTATUS FindPatchGuardContext(PVOID* OutContext) {
 }
 
 VOID ExtractPgEncryptionKey(PVOID Context, PUCHAR KeyBuffer) {
-    RtlFillMemory(KeyBuffer, 32, 0xAA);  // Stubbed key extraction
-    DebugLog("Key extracted from context %p\n", Context);
+    if (!Context || !KeyBuffer)
+        return;
+
+    // Try to extract from a fixed offset within the PG context (observed in Win10 PG)
+    PUCHAR keyCandidate = (PUCHAR)Context + PG_KEY_DERIVATION_OFFSET;
+
+    // Naive validation – check if it looks like a real key
+    if (MmIsAddressValid(keyCandidate)) {
+        RtlCopyMemory(KeyBuffer, keyCandidate, 32);
+        DebugLog("Extracted PG key from context: %p\n", keyCandidate);
+    } else {
+        RtlFillMemory(KeyBuffer, 32, 0x42);  // fallback marker
+        DebugLog("Fallback PG key used.\n");
+    }
 }
 
 NTSTATUS DecryptPatchGuardContext(PUCHAR Key, ULONG KeySize, PVOID Encrypted, PVOID Decrypted, ULONG Size) {
