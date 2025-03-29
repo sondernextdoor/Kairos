@@ -17,16 +17,16 @@ VOID SetPgBreakpoint(PVOID target) {
 }
 
 VOID PgTrapHandler() {
-    DebugLog("PatchGuard trap intercepted!");
+    DebugLog(">> PG Trap Triggered (INT 1)");
 
-    // Revert all patches temporarily
-    RevertEncryptedPatches();
+    RevertEncryptedPatches();  // Clean up before PG checks
+    LogPgTrace();              // Optional: Capture stack / telemetry
 
-    // Delay PG for a moment (optional)
     LARGE_INTEGER delay;
-    delay.QuadPart = -10 * 1000 * 1000;  // 1s
+    delay.QuadPart = -10 * 1000 * 1000;  // 1s sleep
     KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-    // Reapply stealth patch
-    ApplyEncryptedPatches();
+    ApplyEncryptedPatches();  // Re-stealth
+
+    DebugLog("<< PG Trap Handled");
 }
