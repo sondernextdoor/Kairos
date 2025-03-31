@@ -3,7 +3,6 @@
 **Kairos** is a next-generation, red-team-oriented Windows kernel defense neutralization framework.  
 It combines traditional runtime patching with UEFI persistence, hypervisor-level surveillance, and Secure Kernel deception.
 
-> Built for stealth. Born for control.
 
 ---
 
