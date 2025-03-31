@@ -193,13 +193,7 @@ VOID PgMonitorThread(PVOID StartContext) {
             DecryptContextAndUpdate(g_PgContextArray[i].ContextAddress, &g_PgContextArray[i].LastCheckTime);
             if (g_PgContextArray[i].LastCheckTime == 0 ||
                 now < g_PgContextArray[i].LastCheckTime ||
-                (now - g_PgContextArray[i].LastCheckTime) > threshold) {
-                allRecent = FALSE;
-                break;
-            }
-        }
-
-        if (allRecent) {
+                (now - g_PgContextArray[i].LastCheckTime) >   if (allRecent) {
             DbgPrint("All PatchGuard contexts have been updated within threshold.\n");
             break;
         }
@@ -213,11 +207,15 @@ VOID PgMonitorThread(PVOID StartContext) {
         if ((now - g_PgContextArray[i].LastCheckTime) > threshold) {
         DebugLog("PG is about to run. Reverting patch!\n");
         RevertKernelPatch();
-}
+                allRecent = FALSE;
+                break;
+            }
+        }
+    }
 
-// Wait, then reapply
-KeDelayExecutionThread(KernelMode, FALSE, &interval);
-ReapplyKernelPatch();
+    // Wait, then reapply
+    KeDelayExecutionThread(KernelMode, FALSE, &interval);
+    ReapplyKernelPatch();
     }
 
     PsTerminateSystemThread(STATUS_SUCCESS);
